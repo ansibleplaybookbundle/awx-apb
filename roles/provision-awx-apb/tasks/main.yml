@@ -1,0 +1,214 @@
+##############################################################################
+## Provision awx
+## This role executes much of the needed functionality to provision an
+## application using an Ansible Playbook Bundle.  Included in the comments
+## below are some sample resources for getting started deploying an application
+## to OpenShift.
+##############################################################################
+
+##############################################################################
+## An OpenShift Origin route exposes a service at a host name, so that external
+## clients can reach it by name. Each route consists of a name, a service
+## selector, and an optional security configuration.
+## https://docs.openshift.org/latest/architecture/core_concepts/routes.html
+##############################################################################
+- name: create awx route
+  openshift_v1_route:
+    name: awx
+    namespace: '{{ namespace }}'
+    labels:
+      app: awx
+      service: awx
+    port_target_port: http
+    tls_termination: edge
+    tls_insecure_edge_termination_policy: Allow
+    to_name: awx
+    to_kind: Service
+    to_weight: 100
+    wildcard_policy: None
+
+
+# Keep on par with upstream config map template 
+# https://github.com/ansible/awx/blob/1.0.3/installer/openshift/templates/configmap.yml.j2
+- name: Create AWX config map
+  k8s_v1_config_map:
+    name: awx-config
+    namespace: '{{ namespace }}'
+    data:
+      secret_key: {{ awx_secret_key }}
+      awx_settings: |
+        import os
+        import socket
+        ADMINS = ()
+
+        # Container environments don't like chroots
+        AWX_PROOT_ENABLED = False
+
+        #Autoprovisioning should replace this
+        CLUSTER_HOST_ID = socket.gethostname()
+        SYSTEM_UUID = '00000000-0000-0000-0000-000000000000'
+
+        REMOTE_HOST_HEADERS = ['HTTP_X_FORWARDED_FOR']
+
+        CELERY_TASK_QUEUES += (Queue(CLUSTER_HOST_ID, Exchange(CLUSTER_HOST_ID), routing_key=CLUSTER_HOST_ID),)
+        CELERY_TASK_ROUTES['awx.main.tasks.cluster_node_heartbeat'] = {'queue': CLUSTER_HOST_ID, 'routing_key': CLUSTER_HOST_ID}
+        CELERY_TASK_ROUTES['awx.main.tasks.purge_old_stdout_files'] = {'queue': CLUSTER_HOST_ID, 'routing_key': CLUSTER_HOST_ID}
+        STATIC_ROOT = '/var/lib/awx/public/static'
+        PROJECTS_ROOT = '/var/lib/awx/projects'
+        JOBOUTPUT_ROOT = '/var/lib/awx/job_status'
+        SECRET_KEY = file('/etc/tower/SECRET_KEY', 'rb').read().strip()
+        ALLOWED_HOSTS = ['*']
+        INTERNAL_API_URL = 'http://127.0.0.1:8052'
+        AWX_TASK_ENV['HOME'] = '/var/lib/awx'
+        SERVER_EMAIL = 'root@localhost'
+        DEFAULT_FROM_EMAIL = 'webmaster@localhost'
+        EMAIL_SUBJECT_PREFIX = '[AWX] '
+        EMAIL_HOST = 'localhost'
+        EMAIL_PORT = 25
+        EMAIL_HOST_USER = ''
+        EMAIL_HOST_PASSWORD = ''
+        EMAIL_USE_TLS = False
+
+        LOGGING['handlers']['console'] = {
+            '()': 'logging.StreamHandler',
+            'level': 'DEBUG',
+            'formatter': 'simple',
+        }
+
+        LOGGING['loggers']['django.request']['handlers'] = ['console']
+        LOGGING['loggers']['rest_framework.request']['handlers'] = ['console']
+        LOGGING['loggers']['awx']['handlers'] = ['console']
+        LOGGING['loggers']['awx.main.commands.run_callback_receiver']['handlers'] = ['console']
+        LOGGING['loggers']['awx.main.commands.inventory_import']['handlers'] = ['console']
+        LOGGING['loggers']['awx.main.tasks']['handlers'] = ['console']
+        LOGGING['loggers']['awx.main.scheduler']['handlers'] = ['console']
+        LOGGING['loggers']['django_auth_ldap']['handlers'] = ['console']
+        LOGGING['loggers']['social']['handlers'] = ['console']
+        LOGGING['loggers']['system_tracking_migrations']['handlers'] = ['console']
+        LOGGING['loggers']['rbac_migrations']['handlers'] = ['console']
+        LOGGING['loggers']['awx.isolated.manager.playbooks']['handlers'] = ['console']
+        LOGGING['handlers']['callback_receiver'] = {'class': 'logging.NullHandler'}
+        LOGGING['handlers']['fact_receiver'] = {'class': 'logging.NullHandler'}
+        LOGGING['handlers']['task_system'] = {'class': 'logging.NullHandler'}
+        LOGGING['handlers']['tower_warnings'] = {'class': 'logging.NullHandler'}
+        LOGGING['handlers']['rbac_migrations'] = {'class': 'logging.NullHandler'}
+        LOGGING['handlers']['system_tracking_migrations'] = {'class': 'logging.NullHandler'}
+        LOGGING['handlers']['management_playbooks'] = {'class': 'logging.NullHandler'}
+
+        DATABASES = {
+            'default': {
+                'ATOMIC_REQUESTS': True,
+                'ENGINE': 'django.db.backends.postgresql',
+                'NAME': os.environ['DB_NAME'],
+                'USER': os.environ['DB_USER'],
+                'PASSWORD': os.environ['DB_PASSWORD'],
+                'HOST': os.environ['DB_HOST'],
+                'PORT': os.environ['DB_PORT'],
+            }
+        }
+        CELERY_BROKER_URL = 'amqp://{}:{}@{}:{}/{}'.format(
+            "awx",
+            "abcdefg",
+            "localhost",
+            "5672",
+            "awx")
+        CHANNEL_LAYERS = {
+            'default': {'BACKEND': 'asgi_amqp.AMQPChannelLayer',
+                        'ROUTING': 'awx.main.routing.channel_routing',
+                        'CONFIG': {'url': CELERY_BROKER_URL}}
+        }
+        CACHES = {
+            'default': {
+                'BACKEND': 'django.core.cache.backends.memcached.MemcachedCache',
+                'LOCATION': '{}:{}'.format("localhost", "11211")
+            },
+            'ephemeral': {
+                'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',
+            },
+        }
+
+
+##############################################################################
+## An OpenShift Origin deployment configuration provides a replication
+## controller, spins up pods, and also provides the ability to transition from
+## one deployment of an image to a new one.
+## https://docs.openshift.org/latest/architecture/core_concepts/deployments.html#deployments-and-deployment-configurations
+##############################################################################
+- name: create deployment config
+  openshift_v1_deployment_config:
+    name: awx
+    namespace: '{{ namespace }}'
+    labels:
+      app: awx
+      service: awx
+    replicas: 1
+    selector:
+      app: awx
+      service: awx
+    spec_template_metadata_labels:
+      app: awx
+      service: awx
+    volumes:
+      - name: config
+        config_map:
+          name: awx-config
+          items:
+            - key: awx_settings
+              path: settings.py
+            - key: secret_key
+              path: SECRET_KEY
+    containers:
+      - name: awx-web
+        image: '{{ awx_web_image }}:{{ awx_web_image_tag }}'
+        ports:
+          - container_port: 8052
+            protocol: TCP
+        volume_mounts:
+        - name: config
+          mount_path: /etc/tower
+      - name: awx-celery
+        image: '{{ awx_task_image }}:{{ awx_task_image_tag }}'
+        volume_mounts:
+        - name: config
+          mount_path: /etc/tower
+        env:
+        - name: AWX_ADMIN_USER
+          value: '{{ awx_admin_user }}'
+        - name: AWX_ADMIN_PASSWORD
+          value: '{{ awx_admin_password }}'
+      - name: awx-rabbit
+        image: rabbitmq:3
+        env:
+          - name: RABBITMQ_ERLANG_COOKIE
+            value: secretb
+          - name: RABBITMQ_NODENAME
+            value: rabbitmq
+          - name: RABBITMQ_DEFAULT_USER
+            value: awx
+          - name: RABBITMQ_DEFAULT_PASS
+            value: abcdefg
+          - name: RABBITMQ_DEFAULT_VHOST
+            value: awx
+      - name: awx-memcached
+        image: memcached:alpine
+
+
+##############################################################################
+## A Kubernetes service serves as an internal load balancer.  It identifies a
+## set of replicated pods in order to proxy the connections it receives to them.
+## https://docs.openshift.org/latest/architecture/core_concepts/pods_and_services.html#services
+##############################################################################
+- name: create awx service
+  k8s_v1_service:
+    name: awx
+    namespace: '{{ namespace }}'
+    labels:
+      app: awx
+      service: awx
+    selector:
+      app: awx
+      service: awx
+    ports:
+      - name: http
+        port: 8052
+        target_port: 8052

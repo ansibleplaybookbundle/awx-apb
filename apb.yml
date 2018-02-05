@@ -1,0 +1,59 @@
+version: 1.0
+name: awx-apb
+description: AWX APB Implementation
+bindable: False
+async: optional
+metadata:
+  displayName: AWX (APB)
+  longDescription: An APB that deploys AWX
+  documentationUrl: https://docs.ansible.com/ansible-tower/
+  dependencies: ['docker.io/lorbuscode/awx-apb:latest']
+plans:
+  - name: default
+    description: An APB that deploys AWX
+    free: True
+    metadata:
+      displayName: Default
+      longDescription: This plan deploys a single AWX instance. Requires a PostgreSQL DB to bind to.
+      cost: $0.00
+    parameters:
+      - name: awx_web_image
+        title: AWX Web Image
+        description: Docker Image of AWX Web
+        default: ansible/awx_web
+        type: string
+        required: True
+      - name: awx_web_image_tag
+        title: AWX Web Image Tag
+        description: AWX Web Docker Image Version
+        default: 1.0.3
+        type: string
+        required: True
+      - name: awx_task_image
+        title: AWX Task Image
+        description: Docker Image of AWX Task
+        default: ansible/awx_task
+        type: string
+        required: True
+      - name: awx_task_image_tag
+        title: AWX Task Image Tag
+        description: AWX Task Docker Image Version
+        default: 1.0.3
+        type: string
+        required: True
+      - name: awx_admin_user
+        title: AWX Admin User
+        description: AWX Admin User
+        default: admin
+        type: string
+        required: True
+      - name: awx_admin_password
+        title: AWX Admin Password
+        type: string
+        display_type: password
+        required: True
+      - name: awx_secret_key
+        title: AWX Secret Key
+        default: awxsecret
+        type: string
+        required: True
